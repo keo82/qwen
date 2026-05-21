@@ -9,10 +9,53 @@ Supports ACES color management workflow
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
+import sys
 import re
 import subprocess
 import threading
 from pathlib import Path
+
+
+def get_resource_path(relative_path):
+    """Получить абсолютный путь к ресурсу, работает для dev и для PyInstaller"""
+    try:
+        # PyInstaller создает временную папку _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    # Особая обработка для UNC путей в base_path, если скрипт запущен с сети
+    if base_path.startswith('\\\\'):
+        base_path = '\\\\?\\UNC\\' + base_path[2:]
+        
+    return os.path.join(base_path, relative_path)
+
+
+def fix_path_for_windows(path):
+    r"""
+    Исправляет пути для Windows, особенно для UNC путей (\\server\share).
+    Добавляет префикс \\?\ для обхода ограничения MAX_PATH и корректной работы с UNC.
+    """
+    if not path:
+        return path
+    
+    path = path.strip()
+    
+    # Если путь уже имеет префикс \\?\, возвращаем как есть
+    if path.startswith('\\\\?\\'):
+        return path
+    
+    # Обработка UNC путей (\\server\share...)
+    if path.startswith('\\\\'):
+        # Преобразуем \\server\share в \\?\UNC\server\share
+        unc_path = '\\\\?\\UNC\\' + path[2:]
+        return unc_path
+    
+    # Обработка обычных абсолютных путей
+    if len(path) > 260 and not path.startswith('\\\\?\\'):
+        return '\\\\?\\' + path
+        
+    return path
 
 
 class EXRtoMOVConverter:
@@ -636,8 +679,10 @@ class EXRtoMOVConverter:
     def run_conversion(self):
         """Run the conversion process (in background thread)"""
         try:
-            # Read input file list
-            with open(self.input_file_path.get(), 'r') as f:
+            # Read input file list - поддержка UNC путей
+            input_path = fix_path_for_windows(self.input_file_path.get())
+            
+            with open(input_path, 'r', encoding='utf-8') as f:
                 sequences = [line.strip() for line in f if line.strip() and not line.startswith('#')]
             
             total_sequences = len(sequences)
@@ -647,6 +692,9 @@ class EXRtoMOVConverter:
                 if not self.is_converting:
                     self.log("Conversion stopped by user")
                     break
+                
+                # Поддержка UNC путей для каждого пути в списке
+                sequence_path = fix_path_for_windows(sequence_path)
                 
                 self.log(f"\nProcessing sequence {i+1}/{total_sequences}: {sequence_path}")
                 self.update_progress((i / total_sequences) * 100)

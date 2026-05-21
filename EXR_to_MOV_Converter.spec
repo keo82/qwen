@@ -5,7 +5,7 @@ a = Analysis(
     ['exr_to_mov_converter.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('ocio_config/config.ocio', 'ocio_config')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
