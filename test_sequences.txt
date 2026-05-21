@@ -1,0 +1,2 @@
+/workspace/test_data/shot01/shot01_0001.exr
+/workspace/test_data/shot_wide/shot_wide_0001.exr
