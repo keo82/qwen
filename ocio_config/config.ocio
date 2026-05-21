@@ -1,0 +1,154 @@
+# Minimal ACES 1.3 OCIO Configuration
+# This is a simplified configuration for EXR to MOV conversion workflow
+
+ocio_profile_version: 2
+
+environment: []
+
+search_paths: []
+
+roles:
+  scene_linear: aces_ap0
+  compositing_log: aces_ap1
+  color_picking: aces_ap1
+  color_timing: aces_ap1
+  
+  cs_aces_ap0: aces_ap0
+  cs_aces_ap1: aces_ap1
+  
+  cs_rec709: rec709
+  cs_srgb: srgb
+  cs_rec2020: rec2020
+  cs_p3d65: p3d65
+
+displays:
+  sRGB:
+    - !<View> {name: Raw, colorspace: aces_ap0}
+    - !<View> {name: sRGB, colorspace: srgb}
+    - !<View> {name: Rec.709, colorspace: rec709}
+    - !<View> {name: P3-D65, colorspace: p3d65}
+    - !<View> {name: Rec.2020, colorspace: rec2020}
+  
+  Rec709:
+    - !<View> {name: Raw, colorspace: aces_ap0}
+    - !<View> {name: sRGB, colorspace: srgb}
+    - !<View> {name: Rec.709, colorspace: rec709}
+    - !<View> {name: P3-D65, colorspace: p3d65}
+    - !<View> {name: Rec.2020, colorspace: rec2020}
+
+active_displays: [sRGB, Rec709]
+
+default_display: sRGB
+
+colorspaces:
+  - !<ColorSpace>
+    name: aces_ap0
+    family: ACES
+    bit_depth: 32f
+    description: "ACES AP0 - Scene Linear"
+    equality_group: ""
+    allocation: lg2
+    allocation_vars: [-10, 15]
+    to_reference: !<MatrixTransform> {matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]}
+    from_reference: !<MatrixTransform> {matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: aces_ap1
+    family: ACES
+    bit_depth: 32f
+    description: "ACES AP1 - Compositing Linear"
+    equality_group: ""
+    allocation: lg2
+    allocation_vars: [-10, 15]
+    to_reference: !<MatrixTransform> {matrix: [
+        1.4514393161,  -0.2365107469,  -0.2149285693,  0,
+        -0.0772415563,   1.1762296998,  -0.0989881435,  0,
+         0.0097777760,  -0.0061295445,   0.9963517685,  0,
+         0, 0, 0, 1]}
+    from_reference: !<MatrixTransform> {matrix: [
+        0.6954522414,  0.1406786965,  0.1638690621,  0,
+        0.0447945634,  0.8596711185,  0.0955343182,  0,
+        -0.0055323445,  0.0040252104,  1.0015071341,  0,
+        0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: rec709
+    family: Output
+    bit_depth: 32f
+    description: "Rec.709 / sRGB (D65 white)"
+    equality_group: ""
+    allocation: lg2
+    allocation_vars: [-10, 15]
+    to_reference: !<MatrixTransform> {matrix: [
+        0.4123907993,  0.3575843393,  0.1804807884,  0,
+        0.2126390059,  0.7151686788,  0.0721923154,  0,
+        0.0193308187,  0.1191947798,  0.9505321522,  0,
+        0, 0, 0, 1]}
+    from_reference: !<MatrixTransform> {matrix: [
+        3.2409699419, -1.5373831776, -0.4986107603,  0,
+       -0.9692436363,  1.8759675015,  0.0415550574,  0,
+        0.0556300797, -0.2039769589,  1.0569715142,  0,
+        0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: srgb
+    family: Output
+    bit_depth: 32f
+    description: "sRGB with Gamma 2.2"
+    equality_group: ""
+    allocation: lg2
+    allocation_vars: [-10, 15]
+    to_reference: !<GroupTransform>
+      children:
+        - !<MatrixTransform> {matrix: [
+            0.4123907993,  0.3575843393,  0.1804807884,  0,
+            0.2126390059,  0.7151686788,  0.0721923154,  0,
+            0.0193308187,  0.1191947798,  0.9505321522,  0,
+            0, 0, 0, 1]}
+        - !<ExponentTransform> {value: [2.2, 2.2, 2.2, 1]}
+    from_reference: !<GroupTransform>
+      children:
+        - !<ExponentTransform> {value: [0.4545454545, 0.4545454545, 0.4545454545, 1]}
+        - !<MatrixTransform> {matrix: [
+            3.2409699419, -1.5373831776, -0.4986107603,  0,
+           -0.9692436363,  1.8759675015,  0.0415550574,  0,
+            0.0556300797, -0.2039769589,  1.0569715142,  0,
+            0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: rec2020
+    family: Output
+    bit_depth: 32f
+    description: "Rec.2020 (D65 white)"
+    equality_group: ""
+    allocation: lg2
+    allocation_vars: [-10, 15]
+    to_reference: !<MatrixTransform> {matrix: [
+        0.6339690447,  0.1424788967,  0.1667313513,  0,
+        0.2627002120,  0.6780810781,  0.0592187100,  0,
+        0.0000000000,  0.0280726930,  1.0609850503,  0,
+        0, 0, 0, 1]}
+    from_reference: !<MatrixTransform> {matrix: [
+        1.6605390625, -0.1245505400, -0.0181683900,  0,
+       -0.3203415440,  1.5739126540, -0.0362006780,  0,
+       -0.0246158000, -0.0280726930,  0.9421533300,  0,
+        0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: p3d65
+    family: Output
+    bit_depth: 32f
+    description: "DCI-P3 D65"
+    equality_group: ""
+    allocation: lg2
+    allocation_vars: [-10, 15]
+    to_reference: !<MatrixTransform> {matrix: [
+        0.4865709486,  0.2656676931,  0.1982172852,  0,
+        0.2289745640,  0.6917385218,  0.0792869141,  0,
+        0.0000000000,  0.0451133818,  1.0439443689,  0,
+        0, 0, 0, 1]}
+    from_reference: !<MatrixTransform> {matrix: [
+        2.4934969111, -0.9366691932, -0.4027817844,  0,
+       -0.8294889695,  1.7626640603,  0.0236246859,  0,
+        0.0358458302, -0.0761723893,  0.9568845240,  0,
+        0, 0, 0, 1]}

@@ -2,30 +2,80 @@
 # -*- coding: utf-8 -*-
 """
 EXR Sequence to MOV Converter
-Converts EXR sequences (ACES-2065 colorspace) to MOV ProRes 422 (Rec.709 or other colorspaces)
+Converts EXR sequences to MOV with various codecs and colorspaces
+Supports ACES color management workflow
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
+import sys
 import re
 import subprocess
 import threading
 from pathlib import Path
 
 
+def get_resource_path(relative_path):
+    """Получить абсолютный путь к ресурсу, работает для dev и для PyInstaller"""
+    try:
+        # PyInstaller создает временную папку _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    # Особая обработка для UNC путей в base_path, если скрипт запущен с сети
+    if base_path.startswith('\\\\'):
+        base_path = '\\\\?\\UNC\\' + base_path[2:]
+        
+    return os.path.join(base_path, relative_path)
+
+
+def fix_path_for_windows(path):
+    r"""
+    Исправляет пути для Windows, особенно для UNC путей (\\server\share).
+    Добавляет префикс \\?\ для обхода ограничения MAX_PATH и корректной работы с UNC.
+    """
+    if not path:
+        return path
+    
+    path = path.strip()
+    
+    # Если путь уже имеет префикс \\?\, возвращаем как есть
+    if path.startswith('\\\\?\\'):
+        return path
+    
+    # Обработка UNC путей (\\server\share...)
+    if path.startswith('\\\\'):
+        # Преобразуем \\server\share в \\?\UNC\server\share
+        unc_path = '\\\\?\\UNC\\' + path[2:]
+        return unc_path
+    
+    # Обработка обычных абсолютных путей
+    if len(path) > 260 and not path.startswith('\\\\?\\'):
+        return '\\\\?\\' + path
+        
+    return path
+
+
 class EXRtoMOVConverter:
     def __init__(self, root):
         self.root = root
         self.root.title("EXR to MOV Converter")
-        self.root.geometry("800x600")
+        self.root.geometry("900x700")
         self.root.resizable(True, True)
         
         # Variables
         self.input_file_path = tk.StringVar()
         self.output_base_path = tk.StringVar()
         self.fps_value = tk.StringVar(value="24")
-        self.colorspace_var = tk.StringVar(value="rec709")
+        
+        # New variables for enhanced options
+        self.input_colorspace_var = tk.StringVar(value="aces_ap0")
+        self.output_colorspace_var = tk.StringVar(value="rec709")
+        self.output_format_var = tk.StringVar(value="prores")
+        self.anamorphic_var = tk.BooleanVar(value=False)
+        
         self.log_text = None
         self.progress_var = tk.DoubleVar()
         self.is_converting = False
@@ -92,28 +142,89 @@ class EXRtoMOVConverter:
         row += 1
         
         # FPS setting
-        ttk.Label(main_frame, text="FPS:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        self.fps_entry = ttk.Entry(main_frame, textvariable=self.fps_value, width=10)
-        self.fps_entry.grid(row=row, column=1, sticky=tk.W, padx=(10, 0), pady=5)
+        fps_frame = ttk.Frame(main_frame)
+        fps_frame.grid(row=row, column=0, columnspan=3, sticky=tk.W, pady=5)
+        ttk.Label(fps_frame, text="FPS:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        self.fps_entry = ttk.Entry(fps_frame, textvariable=self.fps_value, width=10)
+        self.fps_entry.grid(row=0, column=1, sticky=tk.W)
         row += 1
         
-        # Colorspace selection
-        ttk.Label(main_frame, text="Output Colorspace:").grid(
+        # Anamorphic correction checkbox
+        anamorphic_frame = ttk.Frame(main_frame)
+        anamorphic_frame.grid(row=row, column=0, columnspan=3, sticky=tk.W, pady=5)
+        self.anamorphic_check = ttk.Checkbutton(anamorphic_frame, 
+            text="Anamorphic Correction (unsqueeze 2x)", 
+            variable=self.anamorphic_var)
+        self.anamorphic_check.grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(anamorphic_frame, text="Corrects anamorphic lens squeeze (2x desqueeze)", 
+                 foreground="gray", font=('Helvetica', 8)).grid(row=0, column=1, padx=(10, 0))
+        row += 1
+        
+        # Colorspace settings section
+        colorspace_section_label = ttk.Label(main_frame, text="Colorspace Settings:", 
+                                             font=('Helvetica', 11, 'bold'))
+        colorspace_section_label.grid(row=row, column=0, sticky=tk.W, pady=(10, 5))
+        row += 1
+        
+        # Input colorspace (EXR source)
+        ttk.Label(main_frame, text="Input Colorspace (EXR):").grid(
             row=row, column=0, sticky=tk.W, pady=5)
         
-        colorspace_frame = ttk.Frame(main_frame)
-        colorspace_frame.grid(row=row, column=1, sticky=tk.W, pady=5)
+        input_cs_frame = ttk.Frame(main_frame)
+        input_cs_frame.grid(row=row, column=1, sticky=tk.W, pady=5)
         
-        colorspace_options = [
+        input_colorspace_options = [
+            ("ACES-2065-1 (AP0)", "aces_ap0"),
+            ("ACES-AP1", "aces_ap1"),
+            ("Linear (sRGB/Rec709)", "linear"),
+            ("sRGB", "srgb"),
             ("Rec.709", "rec709"),
             ("Rec.2020", "rec2020"),
             ("P3-D65", "p3d65"),
-            ("ACES - AP1", "aces_ap1"),
         ]
         
-        for i, (text, value) in enumerate(colorspace_options):
-            ttk.Radiobutton(colorspace_frame, text=text, variable=self.colorspace_var, 
-                          value=value).grid(row=0, column=i, padx=10)
+        for i, (text, value) in enumerate(input_colorspace_options):
+            ttk.Radiobutton(input_cs_frame, text=text, variable=self.input_colorspace_var, 
+                          value=value).grid(row=i // 4, column=i % 4, padx=5, sticky=tk.W)
+        row += 1
+        
+        # Output colorspace for MOV
+        ttk.Label(main_frame, text="Output Colorspace (MOV):").grid(
+            row=row, column=0, sticky=tk.W, pady=5)
+        
+        output_cs_frame = ttk.Frame(main_frame)
+        output_cs_frame.grid(row=row, column=1, sticky=tk.W, pady=5)
+        
+        output_colorspace_options = [
+            ("Rec.709", "rec709"),
+            ("sRGB", "srgb"),
+            ("Rec.2020", "rec2020"),
+            ("P3-D65", "p3d65"),
+            ("ACES-AP1", "aces_ap1"),
+        ]
+        
+        for i, (text, value) in enumerate(output_colorspace_options):
+            ttk.Radiobutton(output_cs_frame, text=text, variable=self.output_colorspace_var, 
+                          value=value).grid(row=0, column=i, padx=10, sticky=tk.W)
+        row += 1
+        
+        # Output format selection
+        ttk.Label(main_frame, text="Output Format:").grid(
+            row=row, column=0, sticky=tk.W, pady=5)
+        
+        format_frame = ttk.Frame(main_frame)
+        format_frame.grid(row=row, column=1, sticky=tk.W, pady=5)
+        
+        format_options = [
+            ("ProRes 422 HQ", "prores_hq"),
+            ("ProRes 422", "prores"),
+            ("ProRes 422 LT", "prores_lt"),
+            ("H.264", "h264"),
+        ]
+        
+        for i, (text, value) in enumerate(format_options):
+            ttk.Radiobutton(format_frame, text=text, variable=self.output_format_var, 
+                          value=value).grid(row=0, column=i, padx=10, sticky=tk.W)
         row += 1
         
         # Progress bar
@@ -286,7 +397,8 @@ class EXRtoMOVConverter:
         
         return shot_name
     
-    def convert_sequence(self, sequence_files, output_path, fps, colorspace):
+    def convert_sequence(self, sequence_files, output_path, fps, input_colorspace, output_colorspace, 
+                         output_format, anamorphic):
         """Convert a sequence of EXR files to MOV"""
         if not sequence_files:
             raise ValueError("No sequence files found")
@@ -317,6 +429,11 @@ class EXRtoMOVConverter:
         target_width = 1920
         target_height = 1080
         
+        # Apply anamorphic desqueeze if enabled (2x unsqueeze - stretch width)
+        if anamorphic:
+            src_width = src_width * 2
+            self.log(f"Anamorphic correction applied: {src_width/2}x{src_height} -> {src_width}x{src_height}")
+        
         # Scale to fit within 1920 width while maintaining aspect ratio
         # Don't crop left/right - scale based on width
         scale_factor = target_width / src_width
@@ -333,8 +450,8 @@ class EXRtoMOVConverter:
         pad_left = 0  # No horizontal padding
         pad_top = (target_height - scaled_height) // 2
         
-        # Build ffmpeg filter chain
-        colorspace_filter = self.get_colorspace_filter(colorspace)
+        # Build ffmpeg filter chain with input->output colorspace conversion
+        colorspace_filter = self.get_colorspace_filter(input_colorspace, output_colorspace)
         
         filter_complex = (
             f"{colorspace_filter}, "
@@ -358,6 +475,9 @@ class EXRtoMOVConverter:
             pattern = sequence_files[0]
         
         try:
+            # Build codec and format settings based on output format selection
+            codec_settings = self.get_codec_settings(output_format, output_colorspace)
+            
             # Build ffmpeg command
             cmd = [
                 'ffmpeg',
@@ -365,11 +485,7 @@ class EXRtoMOVConverter:
                 '-framerate', str(fps),
                 '-i', pattern,
                 '-vf', filter_complex,
-                '-c:v', 'prores_ks',
-                '-profile:v', '3',  # ProRes 422
-                '-pix_fmt', 'yuv422p10',
-                output_path
-            ]
+            ] + codec_settings + [output_path]
             
             self.log(f"Running: {' '.join(cmd)}")
             
@@ -395,23 +511,135 @@ class EXRtoMOVConverter:
         except Exception as e:
             raise RuntimeError(f"FFmpeg error: {str(e)}")
     
-    def get_colorspace_filter(self, colorspace):
-        """Get the appropriate colorspace conversion filter for EXR (linear) to target"""
-        # EXR files are typically in linear color space
-        # We need to apply gamma correction and convert to target colorspace
+    def get_colorspace_filter(self, input_colorspace, output_colorspace):
+        """Get the appropriate colorspace conversion filter from input to output colorspace"""
+        # Define gamma values for different colorspaces (simplified approach without OCIO)
+        # For proper ACES workflow, OCIO configuration would be needed
         
-        # For ACES-2065-1 (AP0) input, we use gamma correction as a simple approach
-        # since full OCIO/ACES transformation requires OCIO config files
-        # Gamma 0.4545 approximates linear to Rec.709 transfer function
-        
-        filters = {
-            'rec709': 'eq=gamma=0.4545',
-            'rec2020': 'eq=gamma=0.4545',
-            'p3d65': 'eq=gamma=0.4545',
-            'aces_ap1': 'eq=gamma=1.0',  # Keep linear for AP1
+        # Input gamma values (from linear/source)
+        input_gammas = {
+            'aces_ap0': 1.0,      # ACES-2065-1 is linear
+            'aces_ap1': 1.0,      # ACES-AP1 is linear
+            'linear': 1.0,        # Linear
+            'srgb': 2.2,          # sRGB approx
+            'rec709': 2.4,        # Rec.709 with 2.4 gamma
+            'rec2020': 2.4,       # Rec.2020 with 2.4 gamma
+            'p3d65': 2.6,         # P3-D65
         }
         
-        return filters.get(colorspace, 'eq=gamma=0.4545')
+        # Output gamma values (to target)
+        output_gammas = {
+            'rec709': 0.4545,     # ~1/2.2 for Rec.709
+            'srgb': 0.4545,       # ~1/2.2 for sRGB
+            'rec2020': 0.4545,    # ~1/2.2 for Rec.2020
+            'p3d65': 0.4545,      # ~1/2.2 for P3-D65
+            'aces_ap1': 1.0,      # Keep linear for AP1
+        }
+        
+        in_gamma = input_gammas.get(input_colorspace, 1.0)
+        out_gamma = output_gammas.get(output_colorspace, 0.4545)
+        
+        # Calculate combined gamma correction
+        # If input is linear (gamma=1), we just apply output gamma
+        # If input has a gamma, we need to first linearize then apply output gamma
+        if in_gamma == 1.0:
+            # Source is linear, just apply output transfer function
+            combined_gamma = out_gamma
+        else:
+            # Need to convert: source gamma -> linear -> output gamma
+            combined_gamma = out_gamma * in_gamma
+        
+        return f'eq=gamma={combined_gamma:.4f}'
+
+    def get_codec_settings(self, output_format, output_colorspace):
+        """Get codec and format settings based on output format selection"""
+        
+        # Determine pixel format based on output colorspace
+        if output_colorspace in ['rec709', 'rec2020', 'p3d65', 'aces_ap1']:
+            pix_fmt = 'yuv422p10'  # 10-bit 4:2:2 for video colorspaces
+        else:
+            pix_fmt = 'yuv422p10'  # Default to 10-bit
+        
+        if output_format == 'prores_hq':
+            return [
+                '-c:v', 'prores_ks',
+                '-profile:v', '4',  # ProRes 422 HQ
+                '-pix_fmt', pix_fmt,
+                '-colorspace', self.get_ffmpeg_colorspace(output_colorspace),
+                '-color_primaries', self.get_ffmpeg_primaries(output_colorspace),
+                '-color_trc', self.get_ffmpeg_trc(output_colorspace),
+            ]
+        elif output_format == 'prores':
+            return [
+                '-c:v', 'prores_ks',
+                '-profile:v', '3',  # ProRes 422
+                '-pix_fmt', pix_fmt,
+                '-colorspace', self.get_ffmpeg_colorspace(output_colorspace),
+                '-color_primaries', self.get_ffmpeg_primaries(output_colorspace),
+                '-color_trc', self.get_ffmpeg_trc(output_colorspace),
+            ]
+        elif output_format == 'prores_lt':
+            return [
+                '-c:v', 'prores_ks',
+                '-profile:v', '2',  # ProRes 422 LT
+                '-pix_fmt', pix_fmt,
+                '-colorspace', self.get_ffmpeg_colorspace(output_colorspace),
+                '-color_primaries', self.get_ffmpeg_primaries(output_colorspace),
+                '-color_trc', self.get_ffmpeg_trc(output_colorspace),
+            ]
+        elif output_format == 'h264':
+            return [
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '18',  # High quality
+                '-pix_fmt', 'yuv420p',  # H.264 typically uses 4:2:0
+                '-colorspace', self.get_ffmpeg_colorspace(output_colorspace),
+                '-color_primaries', self.get_ffmpeg_primaries(output_colorspace),
+                '-color_trc', self.get_ffmpeg_trc(output_colorspace),
+            ]
+        else:
+            # Default to ProRes 422
+            return [
+                '-c:v', 'prores_ks',
+                '-profile:v', '3',
+                '-pix_fmt', pix_fmt,
+                '-colorspace', self.get_ffmpeg_colorspace(output_colorspace),
+                '-color_primaries', self.get_ffmpeg_primaries(output_colorspace),
+                '-color_trc', self.get_ffmpeg_trc(output_colorspace),
+            ]
+    
+    def get_ffmpeg_colorspace(self, colorspace):
+        """Get FFmpeg colorspace value"""
+        mapping = {
+            'rec709': 'bt709',
+            'rec2020': 'bt2020nc',
+            'p3d65': 'bt709',  # Closest match
+            'aces_ap1': 'bt709',
+            'srgb': 'bt709',
+        }
+        return mapping.get(colorspace, 'bt709')
+    
+    def get_ffmpeg_primaries(self, colorspace):
+        """Get FFmpeg color primaries value"""
+        mapping = {
+            'rec709': 'bt709',
+            'rec2020': 'bt2020',
+            'p3d65': 'smpte432',
+            'aces_ap1': 'bt709',
+            'srgb': 'bt709',
+        }
+        return mapping.get(colorspace, 'bt709')
+    
+    def get_ffmpeg_trc(self, colorspace):
+        """Get FFmpeg transfer characteristics value"""
+        mapping = {
+            'rec709': 'bt709',
+            'rec2020': 'bt2020_10',
+            'p3d65': 'bt709',
+            'aces_ap1': 'linear',
+            'srgb': 'iec61966_2_1',
+        }
+        return mapping.get(colorspace, 'bt709')
     
     def start_conversion(self):
         """Start the conversion process"""
@@ -451,8 +679,10 @@ class EXRtoMOVConverter:
     def run_conversion(self):
         """Run the conversion process (in background thread)"""
         try:
-            # Read input file list
-            with open(self.input_file_path.get(), 'r') as f:
+            # Read input file list - поддержка UNC путей
+            input_path = fix_path_for_windows(self.input_file_path.get())
+            
+            with open(input_path, 'r', encoding='utf-8') as f:
                 sequences = [line.strip() for line in f if line.strip() and not line.startswith('#')]
             
             total_sequences = len(sequences)
@@ -462,6 +692,9 @@ class EXRtoMOVConverter:
                 if not self.is_converting:
                     self.log("Conversion stopped by user")
                     break
+                
+                # Поддержка UNC путей для каждого пути в списке
+                sequence_path = fix_path_for_windows(sequence_path)
                 
                 self.log(f"\nProcessing sequence {i+1}/{total_sequences}: {sequence_path}")
                 self.update_progress((i / total_sequences) * 100)
@@ -489,11 +722,16 @@ class EXRtoMOVConverter:
                 
                 self.log(f"Output path: {output_path}")
                 
-                # Convert sequence
-                colorspace = self.colorspace_var.get()
+                # Convert sequence with all new parameters
+                input_colorspace = self.input_colorspace_var.get()
+                output_colorspace = self.output_colorspace_var.get()
+                output_format = self.output_format_var.get()
+                anamorphic = self.anamorphic_var.get()
                 fps = float(self.fps_value.get())
                 
-                self.convert_sequence(sequence_files, output_path, fps, colorspace)
+                self.convert_sequence(sequence_files, output_path, fps, 
+                                     input_colorspace, output_colorspace, 
+                                     output_format, anamorphic)
                 
                 self.log(f"Completed: {output_path}")
             
